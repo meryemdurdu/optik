@@ -1,6 +1,7 @@
 #include "ROIDetector.hpp"
 
 #include <algorithm>
+#include <iomanip>
 #include <sstream>
 
 #include "core/Logger.hpp"
@@ -58,11 +59,14 @@ std::string detectOMRGrid(const cv::Mat& roiGray,
                           double minAbsoluteFill,
                           std::vector<double>* bestVals = nullptr) {
     cv::Mat blurImg, thr;
-    cv::GaussianBlur(roiGray, blurImg, cv::Size(3, 3), 0);
-    cv::adaptiveThreshold(blurImg, thr, 255, cv::ADAPTIVE_THRESH_MEAN_C, cv::THRESH_BINARY_INV,
-                          21, 7);
+    cv::Mat normGray;
+    cv::equalizeHist(roiGray, normGray);
+    cv::GaussianBlur(normGray, blurImg, cv::Size(3, 3), 0);
+    cv::adaptiveThreshold(blurImg, thr, 255, cv::ADAPTIVE_THRESH_GAUSSIAN_C, cv::THRESH_BINARY_INV,
+                          25, 5);
     cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(3, 3));
     cv::morphologyEx(thr, thr, cv::MORPH_OPEN, kernel);
+    cv::dilate(thr, thr, kernel, cv::Point(-1, -1), 1);
 
     int cellH = roiGray.rows / rows;
     int cellW = roiGray.cols / cols;
@@ -106,7 +110,7 @@ std::string detectOMRGrid(const cv::Mat& roiGray,
 
         bool highFill = bestVal >= fillThreshold;
         bool dominant = ((bestVal - secondVal) >= confidenceGap) &&
-                        (bestVal >= std::max(minAbsoluteFill, fillThreshold * 0.5));
+                        (bestVal >= std::max(minAbsoluteFill, fillThreshold * 0.4));
         bool confident = (bestCol >= 0) && (highFill || dominant);
 
         if (!confident || bestCol < 0) {
@@ -130,11 +134,14 @@ std::string detectSingleColumn(const cv::Mat& roiGray,
                                double maskRatio,
                                double minAbsoluteFill) {
     cv::Mat blurImg, thr;
-    cv::GaussianBlur(roiGray, blurImg, cv::Size(3, 3), 0);
-    cv::adaptiveThreshold(blurImg, thr, 255, cv::ADAPTIVE_THRESH_MEAN_C, cv::THRESH_BINARY_INV,
-                          21, 7);
+    cv::Mat normGray;
+    cv::equalizeHist(roiGray, normGray);
+    cv::GaussianBlur(normGray, blurImg, cv::Size(3, 3), 0);
+    cv::adaptiveThreshold(blurImg, thr, 255, cv::ADAPTIVE_THRESH_GAUSSIAN_C, cv::THRESH_BINARY_INV,
+                          25, 5);
     cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(3, 3));
     cv::morphologyEx(thr, thr, cv::MORPH_OPEN, kernel);
+    cv::dilate(thr, thr, kernel, cv::Point(-1, -1), 1);
 
     int cellH = roiGray.rows / rows;
     int cellW = roiGray.cols;
@@ -162,7 +169,7 @@ std::string detectSingleColumn(const cv::Mat& roiGray,
     if (bestIdx < 0)
         return "-";
     bool highFill = bestVal >= fillThreshold;
-    bool dominant = bestVal >= std::max(minAbsoluteFill, fillThreshold * 0.5);
+    bool dominant = bestVal >= std::max(minAbsoluteFill, fillThreshold * 0.4);
     return (highFill || dominant) ? std::to_string(bestIdx) : "-";
 }
 
@@ -251,11 +258,14 @@ std::vector<ROIDetector::QuestionDetail> ROIDetector::analyzeGridWithDetails(
     char firstLabel) {
     std::vector<ROIDetector::QuestionDetail> details;
     cv::Mat blurImg, thr;
-    cv::GaussianBlur(roiGray, blurImg, cv::Size(3, 3), 0);
-    cv::adaptiveThreshold(blurImg, thr, 255, cv::ADAPTIVE_THRESH_MEAN_C, cv::THRESH_BINARY_INV,
-                          21, 7);
+    cv::Mat normGray;
+    cv::equalizeHist(roiGray, normGray);
+    cv::GaussianBlur(normGray, blurImg, cv::Size(3, 3), 0);
+    cv::adaptiveThreshold(blurImg, thr, 255, cv::ADAPTIVE_THRESH_GAUSSIAN_C, cv::THRESH_BINARY_INV,
+                          25, 5);
     cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(3, 3));
     cv::morphologyEx(thr, thr, cv::MORPH_OPEN, kernel);
+    cv::dilate(thr, thr, kernel, cv::Point(-1, -1), 1);
 
     int cellH = roiGray.rows / rows;
     int cellW = roiGray.cols / cols;
@@ -311,10 +321,11 @@ std::vector<ROIDetector::QuestionDetail> ROIDetector::analyzeGridWithDetails(
             qd.isCorrect = false;
         }
 
-        if (!confident && debugMode_) {
-            LOG_DEBUG("BUBBLE", "Soru " + std::to_string(r + 1) +
-                                    " belirsiz - best=" + std::to_string(bestVal) +
-                                    " second=" + std::to_string(secondVal));
+        if (debugMode_) {
+            std::ostringstream dbg;
+            dbg << "Soru " << (r + 1) << " -> best=" << std::fixed << std::setprecision(3)
+                << bestVal << " second=" << secondVal << " mark=" << qd.markedAnswer;
+            LOG_DEBUG("BUBBLE", dbg.str());
         }
 
         details.push_back(qd);
