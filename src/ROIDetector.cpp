@@ -33,6 +33,7 @@ std::string detectOMRGrid(const cv::Mat& roiGray,
                           double fillThreshold,
                           double cropRatio,
                           double confidenceGap,
+                          double minAbsoluteFill,
                           std::vector<double>* bestVals = nullptr) {
     cv::Mat blurImg, thr;
     cv::GaussianBlur(roiGray, blurImg, cv::Size(3, 3), 0);
@@ -82,7 +83,10 @@ std::string detectOMRGrid(const cv::Mat& roiGray,
         if (bestVals)
             (*bestVals)[r] = bestVal;
 
-        bool confident = (bestVal >= fillThreshold) && ((bestVal - secondVal) >= confidenceGap);
+        bool highFill = bestVal >= fillThreshold;
+        bool dominant = ((bestVal - secondVal) >= confidenceGap) &&
+                        (bestVal >= std::max(minAbsoluteFill, fillThreshold * 0.5));
+        bool confident = (bestCol >= 0) && (highFill || dominant);
 
         if (!confident || bestCol < 0) {
             result += "-";
@@ -101,7 +105,8 @@ std::string detectOMRGrid(const cv::Mat& roiGray,
 std::string detectSingleColumn(const cv::Mat& roiGray,
                                int rows,
                                double fillThreshold,
-                               double cropRatio) {
+                               double cropRatio,
+                               double minAbsoluteFill) {
     cv::Mat blurImg, thr;
     cv::GaussianBlur(roiGray, blurImg, cv::Size(3, 3), 0);
     cv::adaptiveThreshold(blurImg, thr, 255, cv::ADAPTIVE_THRESH_MEAN_C, cv::THRESH_BINARY_INV,
@@ -133,10 +138,11 @@ std::string detectSingleColumn(const cv::Mat& roiGray,
         }
     }
 
-    if (bestVal < fillThreshold || bestIdx < 0)
+    if (bestIdx < 0)
         return "-";
-
-    return std::to_string(bestIdx);
+    bool highFill = bestVal >= fillThreshold;
+    bool dominant = bestVal >= std::max(minAbsoluteFill, fillThreshold * 0.5);
+    return (highFill || dominant) ? std::to_string(bestIdx) : "-";
 }
 
 }  // namespace
@@ -197,9 +203,10 @@ std::map<std::string, std::string> ROIDetector::process(const cv::Mat& warped, c
 
         if (reg.type == RegionType::GRID) {
             val = detectOMRGrid(sub, reg.rows, reg.cols, fillThreshold_, bubbleCropRatio_,
-                                confidenceGap_);
+                                confidenceGap_, minAbsoluteFill_);
         } else {
-            val = detectSingleColumn(sub, reg.rows, fillThreshold_, bubbleCropRatio_);
+            val = detectSingleColumn(sub, reg.rows, fillThreshold_, bubbleCropRatio_,
+                                     minAbsoluteFill_);
         }
 
         out[reg.name] = val;
@@ -265,8 +272,11 @@ std::vector<ROIDetector::QuestionDetail> ROIDetector::analyzeGridWithDetails(
         qd.questionNumber = r;
         qd.fillRatio = bestVal;
 
-        bool confident = (bestVal >= fillThreshold_) && ((bestVal - secondVal) >= confidenceGap_);
-        if (!confident || bestCol < 0) {
+        bool highFill = bestVal >= fillThreshold_;
+        bool dominant = ((bestVal - secondVal) >= confidenceGap_) &&
+                        (bestVal >= std::max(minAbsoluteFill_, fillThreshold_ * 0.5));
+        bool confident = (bestCol >= 0) && (highFill || dominant);
+        if (!confident) {
             qd.markedAnswer = '-';
         } else {
             qd.markedAnswer = static_cast<char>(firstLabel + bestCol);
