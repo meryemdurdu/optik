@@ -27,12 +27,34 @@ cv::Rect shrinkRect(const cv::Rect& r, int marginX, int marginY) {
     return shrunk;
 }
 
+double computeCircularFill(const cv::Mat& binary, double maskRatio) {
+    if (binary.empty())
+        return 0.0;
+
+    cv::Mat mask = cv::Mat::zeros(binary.size(), CV_8U);
+    int diameter = std::min(binary.cols, binary.rows);
+    int radius = std::max(1, static_cast<int>(diameter * maskRatio));
+    cv::Point center(binary.cols / 2, binary.rows / 2);
+    cv::circle(mask, center, radius, 255, -1);
+
+    cv::Mat masked;
+    cv::bitwise_and(binary, mask, masked);
+
+    double denom = static_cast<double>(cv::countNonZero(mask));
+    if (denom < 1.0)
+        return 0.0;
+
+    double numer = static_cast<double>(cv::countNonZero(masked));
+    return numer / denom;
+}
+
 std::string detectOMRGrid(const cv::Mat& roiGray,
                           int rows,
                           int cols,
                           double fillThreshold,
                           double cropRatio,
                           double confidenceGap,
+                          double maskRatio,
                           double minAbsoluteFill,
                           std::vector<double>* bestVals = nullptr) {
     cv::Mat blurImg, thr;
@@ -67,9 +89,8 @@ std::string detectOMRGrid(const cv::Mat& roiGray,
             if (core.width <= 0 || core.height <= 0)
                 core = cell;
 
-            cv::Mat sub = thr(core);
-            double filled = static_cast<double>(cv::countNonZero(sub)) /
-                            static_cast<double>(core.area());
+            cv::Mat sub = thr(core).clone();
+            double filled = computeCircularFill(sub, maskRatio);
 
             if (filled > bestVal) {
                 secondVal = bestVal;
@@ -106,6 +127,7 @@ std::string detectSingleColumn(const cv::Mat& roiGray,
                                int rows,
                                double fillThreshold,
                                double cropRatio,
+                               double maskRatio,
                                double minAbsoluteFill) {
     cv::Mat blurImg, thr;
     cv::GaussianBlur(roiGray, blurImg, cv::Size(3, 3), 0);
@@ -129,9 +151,8 @@ std::string detectSingleColumn(const cv::Mat& roiGray,
         if (core.width <= 0 || core.height <= 0)
             core = cell;
 
-        cv::Mat sub = thr(core);
-        double filled = static_cast<double>(cv::countNonZero(sub)) /
-                        static_cast<double>(core.area());
+        cv::Mat sub = thr(core).clone();
+        double filled = computeCircularFill(sub, maskRatio);
         if (filled > bestVal) {
             bestVal = filled;
             bestIdx = r;
@@ -203,10 +224,10 @@ std::map<std::string, std::string> ROIDetector::process(const cv::Mat& warped, c
 
         if (reg.type == RegionType::GRID) {
             val = detectOMRGrid(sub, reg.rows, reg.cols, fillThreshold_, bubbleCropRatio_,
-                                confidenceGap_, minAbsoluteFill_);
+                                confidenceGap_, bubbleMaskRadiusRatio_, minAbsoluteFill_);
         } else {
             val = detectSingleColumn(sub, reg.rows, fillThreshold_, bubbleCropRatio_,
-                                     minAbsoluteFill_);
+                                     bubbleMaskRadiusRatio_, minAbsoluteFill_);
         }
 
         out[reg.name] = val;
@@ -255,10 +276,9 @@ std::vector<ROIDetector::QuestionDetail> ROIDetector::analyzeGridWithDetails(
             if (core.width <= 0 || core.height <= 0)
                 core = cell;
 
-            cv::Mat sub = thr(core);
+            cv::Mat sub = thr(core).clone();
 
-            double filled = static_cast<double>(cv::countNonZero(sub)) /
-                            static_cast<double>(core.area());
+            double filled = computeCircularFill(sub, bubbleMaskRadiusRatio_);
             if (filled > bestVal) {
                 secondVal = bestVal;
                 bestVal = filled;

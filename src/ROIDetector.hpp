@@ -52,9 +52,10 @@ private:
 
     std::vector<RegionDef> regions_;
     double fillThreshold_ = 0.20;
-    double bubbleCropRatio_ = 0.12;     // hucre icindeki ornekleme alani
+    double bubbleCropRatio_ = 0.08;     // hucre icindeki ornekleme alani
+    double bubbleMaskRadiusRatio_ = 0.45;  // daire maskesi yaricapi icin oran
     double confidenceGap_ = 0.05;       // en iyi ile ikinci arasindaki min fark
-    double minAbsoluteFill_ = 0.08;     // dominantlik icin minimum doluluk
+    double minAbsoluteFill_ = 0.12;     // dominantlik icin minimum doluluk
     bool debugMode_ = false;
     cv::Mat lastDebug_;
 };
