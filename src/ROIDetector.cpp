@@ -15,15 +15,31 @@ cv::Rect rectPct(const cv::Mat& img, float x, float y, float w, float h) {
     return cv::Rect(X, Y, W, H);
 }
 
+cv::Rect shrinkRect(const cv::Rect& r, int marginX, int marginY) {
+    cv::Rect shrunk = r;
+    shrunk.x += marginX;
+    shrunk.y += marginY;
+    shrunk.width -= 2 * marginX;
+    shrunk.height -= 2 * marginY;
+    if (shrunk.width <= 0 || shrunk.height <= 0) {
+        return r;
+    }
+    return shrunk;
+}
+
 std::string detectOMRGrid(const cv::Mat& roiGray,
                           int rows,
                           int cols,
                           double fillThreshold,
+                          double cropRatio,
+                          double confidenceGap,
                           std::vector<double>* bestVals = nullptr) {
     cv::Mat blurImg, thr;
     cv::GaussianBlur(roiGray, blurImg, cv::Size(3, 3), 0);
     cv::adaptiveThreshold(blurImg, thr, 255, cv::ADAPTIVE_THRESH_MEAN_C, cv::THRESH_BINARY_INV,
                           21, 7);
+    cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(3, 3));
+    cv::morphologyEx(thr, thr, cv::MORPH_OPEN, kernel);
 
     int cellH = roiGray.rows / rows;
     int cellW = roiGray.cols / cols;
@@ -37,25 +53,38 @@ std::string detectOMRGrid(const cv::Mat& roiGray,
     for (int r = 0; r < rows; ++r) {
         int bestCol = -1;
         double bestVal = 0.0;
+        double secondVal = 0.0;
 
         for (int c = 0; c < cols; ++c) {
             int x = c * cellW;
             int y = r * cellH;
             cv::Rect cell(x, y, cellW, cellH);
-            cv::Mat sub = thr(cell);
+            int marginX = std::max(1, static_cast<int>(cellW * cropRatio));
+            int marginY = std::max(1, static_cast<int>(cellH * cropRatio));
+            cv::Rect core = shrinkRect(cell, marginX, marginY);
+            core &= cv::Rect(0, 0, thr.cols, thr.rows);
+            if (core.width <= 0 || core.height <= 0)
+                core = cell;
 
+            cv::Mat sub = thr(core);
             double filled = static_cast<double>(cv::countNonZero(sub)) /
-                            static_cast<double>(cell.area());
+                            static_cast<double>(core.area());
+
             if (filled > bestVal) {
+                secondVal = bestVal;
                 bestVal = filled;
                 bestCol = c;
+            } else if (filled > secondVal) {
+                secondVal = filled;
             }
         }
 
         if (bestVals)
             (*bestVals)[r] = bestVal;
 
-        if (bestVal < fillThreshold) {
+        bool confident = (bestVal >= fillThreshold) && ((bestVal - secondVal) >= confidenceGap);
+
+        if (!confident || bestCol < 0) {
             result += "-";
         } else {
             char mark = static_cast<char>('A' + bestCol);
@@ -69,11 +98,16 @@ std::string detectOMRGrid(const cv::Mat& roiGray,
     return result;
 }
 
-std::string detectSingleColumn(const cv::Mat& roiGray, int rows, double fillThreshold) {
+std::string detectSingleColumn(const cv::Mat& roiGray,
+                               int rows,
+                               double fillThreshold,
+                               double cropRatio) {
     cv::Mat blurImg, thr;
     cv::GaussianBlur(roiGray, blurImg, cv::Size(3, 3), 0);
     cv::adaptiveThreshold(blurImg, thr, 255, cv::ADAPTIVE_THRESH_MEAN_C, cv::THRESH_BINARY_INV,
                           21, 7);
+    cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(3, 3));
+    cv::morphologyEx(thr, thr, cv::MORPH_OPEN, kernel);
 
     int cellH = roiGray.rows / rows;
     int cellW = roiGray.cols;
@@ -83,9 +117,16 @@ std::string detectSingleColumn(const cv::Mat& roiGray, int rows, double fillThre
 
     for (int r = 0; r < rows; ++r) {
         cv::Rect cell(0, r * cellH, cellW, cellH);
-        cv::Mat sub = thr(cell);
+        int marginX = std::max(1, static_cast<int>(cellW * cropRatio));
+        int marginY = std::max(1, static_cast<int>(cellH * cropRatio));
+        cv::Rect core = shrinkRect(cell, marginX, marginY);
+        core &= cv::Rect(0, 0, thr.cols, thr.rows);
+        if (core.width <= 0 || core.height <= 0)
+            core = cell;
+
+        cv::Mat sub = thr(core);
         double filled = static_cast<double>(cv::countNonZero(sub)) /
-                        static_cast<double>(cell.area());
+                        static_cast<double>(core.area());
         if (filled > bestVal) {
             bestVal = filled;
             bestIdx = r;
@@ -155,9 +196,10 @@ std::map<std::string, std::string> ROIDetector::process(const cv::Mat& warped, c
         std::string val;
 
         if (reg.type == RegionType::GRID) {
-            val = detectOMRGrid(sub, reg.rows, reg.cols, fillThreshold_);
+            val = detectOMRGrid(sub, reg.rows, reg.cols, fillThreshold_, bubbleCropRatio_,
+                                confidenceGap_);
         } else {
-            val = detectSingleColumn(sub, reg.rows, fillThreshold_);
+            val = detectSingleColumn(sub, reg.rows, fillThreshold_, bubbleCropRatio_);
         }
 
         out[reg.name] = val;
@@ -184,6 +226,8 @@ std::vector<ROIDetector::QuestionDetail> ROIDetector::analyzeGridWithDetails(
     cv::GaussianBlur(roiGray, blurImg, cv::Size(3, 3), 0);
     cv::adaptiveThreshold(blurImg, thr, 255, cv::ADAPTIVE_THRESH_MEAN_C, cv::THRESH_BINARY_INV,
                           21, 7);
+    cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(3, 3));
+    cv::morphologyEx(thr, thr, cv::MORPH_OPEN, kernel);
 
     int cellH = roiGray.rows / rows;
     int cellW = roiGray.cols / cols;
@@ -191,18 +235,29 @@ std::vector<ROIDetector::QuestionDetail> ROIDetector::analyzeGridWithDetails(
     for (int r = 0; r < rows; ++r) {
         int bestCol = -1;
         double bestVal = 0.0;
+        double secondVal = 0.0;
 
         for (int c = 0; c < cols; ++c) {
             int x = c * cellW;
             int y = r * cellH;
             cv::Rect cell(x, y, cellW, cellH);
-            cv::Mat sub = thr(cell);
+            int marginX = std::max(1, static_cast<int>(cellW * bubbleCropRatio_));
+            int marginY = std::max(1, static_cast<int>(cellH * bubbleCropRatio_));
+            cv::Rect core = shrinkRect(cell, marginX, marginY);
+            core &= cv::Rect(0, 0, thr.cols, thr.rows);
+            if (core.width <= 0 || core.height <= 0)
+                core = cell;
+
+            cv::Mat sub = thr(core);
 
             double filled = static_cast<double>(cv::countNonZero(sub)) /
-                            static_cast<double>(cell.area());
+                            static_cast<double>(core.area());
             if (filled > bestVal) {
+                secondVal = bestVal;
                 bestVal = filled;
                 bestCol = c;
+            } else if (filled > secondVal) {
+                secondVal = filled;
             }
         }
 
@@ -210,7 +265,8 @@ std::vector<ROIDetector::QuestionDetail> ROIDetector::analyzeGridWithDetails(
         qd.questionNumber = r;
         qd.fillRatio = bestVal;
 
-        if (bestVal < fillThreshold_) {
+        bool confident = (bestVal >= fillThreshold_) && ((bestVal - secondVal) >= confidenceGap_);
+        if (!confident || bestCol < 0) {
             qd.markedAnswer = '-';
         } else {
             qd.markedAnswer = static_cast<char>(firstLabel + bestCol);
@@ -223,6 +279,12 @@ std::vector<ROIDetector::QuestionDetail> ROIDetector::analyzeGridWithDetails(
         } else {
             qd.correctAnswer = '-';
             qd.isCorrect = false;
+        }
+
+        if (!confident && debugMode_) {
+            LOG_DEBUG("BUBBLE", "Soru " + std::to_string(r + 1) +
+                                    " belirsiz - best=" + std::to_string(bestVal) +
+                                    " second=" + std::to_string(secondVal));
         }
 
         details.push_back(qd);
